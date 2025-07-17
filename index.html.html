@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Keap Leads Conversion Dashboard</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/isBetween.js"></script>
+  <style>
+    body { font-family: 'Inter', Arial, sans-serif; background: #f7f7f7; margin: 0; }
+    .container { max-width: 1000px; margin: 30px auto; background: white; border-radius: 18px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); padding: 32px; }
+    h2 { margin-top: 0; }
+    label { font-weight: 500; margin-right: 14px; }
+    select, input[type="date"] { margin-right: 14px; padding: 5px 10px; border-radius: 8px; border: 1px solid #ccc; }
+    .flex { display: flex; align-items: center; gap: 10px; }
+    .stats { margin-top: 18px; font-size: 1.12em; }
+    .bar { height: 20px; background: #cee7ff; margin-bottom: 3px; border-radius: 5px; }
+    .chart-wrap { background: #fcfcfc; border-radius: 16px; margin-top: 30px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);}
+    .filt-row { margin-bottom: 18px; }
+    .chart-box { width: 100%; max-width: 600px; }
+    .table { margin-top: 32px; width: 100%; border-collapse: collapse; font-size: .97em;}
+    .table th, .table td { padding: 8px 12px; border-bottom: 1px solid #eaeaea; }
+    .table th { background: #fafbfc; }
+    .btn { background: #3287fa; color: white; border: none; padding: 7px 15px; border-radius: 7px; cursor: pointer;}
+    .btn:active { background: #18569e;}
+    .file-upload { margin-bottom: 24px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    dayjs.extend(window.dayjs_plugin_isBetween);
+
+    function unique(arr) { return [...new Set(arr)]; }
+
+    function parseCSVtoJS(csvText) {
+      const data = Papa.parse(csvText, { header: true }).data;
+      // Parse dates as dayjs, clean Is Client column
+      return data.map(row => ({
+        ...row,
+        'Date Created': dayjs(row['Date Created']),
+        'Last Updated': dayjs(row['Last Updated']),
+        'Is Client': String(row['Is Client']).toLowerCase() === 'true',
+      }));
+    }
+
+    function getDateRange(data) {
+      const dates = data.map(r => r['Date Created']).filter(d => d.isValid && d.isValid());
+      if (!dates.length) return [dayjs().subtract(30, 'days'), dayjs()];
+      return [dayjs.min(dates), dayjs.max(dates)];
+    }
+
+    function App() {
+      const [rawData, setRawData] = React.useState([]);
+      const [data, setData] = React.useState([]);
+      const [ownerNames, setOwnerNames] = React.useState([]);
+      const [leadSources, setLeadSources] = React.useState([]);
+      const [pipelineStages, setPipelineStages] = React.useState([]);
+      const [dateRange, setDateRange] = React.useState([dayjs().subtract(30, 'days'), dayjs()]);
+      const [selectedOwner, setSelectedOwner] = React.useState('');
+      const [selectedSource, setSelectedSource] = React.useState('');
+      const [startDate, setStartDate] = React.useState('');
+      const [endDate, setEndDate] = React.useState('');
+
+      // Load CSV
+      function handleFileChange(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        Papa.parse(file, {
+          complete: res => {
+            const arr = parseCSVtoJS(Papa.unparse(res.data));
+            setRawData(arr);
+            setData(arr);
+            // Owners
+            setOwnerNames(unique(arr.map(r => r['Owner Name']).filter(Boolean)).sort());
+            // Lead Sources
+            setLeadSources(unique(arr.map(r => r['Lead Source']).filter(Boolean)).sort());
+            // Pipeline Stages
+            setPipelineStages(unique(arr.map(r => r['Pipeline Stage']).filter(Boolean)).sort());
+            // Dates
+            const [start, end] = getDateRange(arr);
+            setDateRange([start, end]);
+            setStartDate(start.format('YYYY-MM-DD'));
+            setEndDate(end.format('YYYY-MM-DD'));
+          },
+          header: true,
+          skipEmptyLines: true
+        });
+      }
+
+      // Filter data
+      React.useEffect(() => {
+        if (!rawData.length) return;
+        let filtered = rawData.filter(r => {
+          // Date
+          const dc = r['Date Created'];
+          if (!dc || !dc.isValid || !startDate || !endDate) return false;
+          if (!dayjs(dc).isBetween(dayjs(startDate).subtract(1,'day'), dayjs(endDate).add(1,'day'), null, '[]')) return false;
+          // Owner
+          if (selectedOwner && r['Owner Name'] !== selectedOwner) return false;
+          // Lead Source
+          if (selectedSource && r['Lead Source'] !== selectedSource) return false;
+          return true;
+        });
+        setData(filtered);
+      }, [rawData, selectedOwner, selectedSource, startDate, endDate]);
+
+      // Stats
+      const totalLeads = data.length;
+      const totalClients = data.filter(r => r['Is Client']).length;
+      const convRate = totalLeads ? ((totalClients/totalLeads)*100).toFixed(1) : 0;
+      const byStage = {};
+      data.forEach(r => {
+        const stage = r['Pipeline Stage'] || 'Other';
+        byStage[stage] = (byStage[stage] || 0) + 1;
+      });
+      const bySource = {};
+      data.forEach(r => {
+        const src = r['Lead Source'] || 'Other';
+        bySource[src] = (bySource[src] || 0) + 1;
+      });
+
+      // Chart (for Pipeline Stage)
+      React.useEffect(() => {
+        if (!window.stageChart) {
+          window.stageChart = new Chart(document.getElementById('stageChart'), {
+            type: 'bar',
+            data: { labels: Object.keys(byStage), datasets: [{
+              label: 'Leads by Pipeline Stage',
+              data: Object.values(byStage)
+            }]},
+            options: {responsive: true, plugins: {legend: {display: false}}}
+          });
+        } else {
+          window.stageChart.data.labels = Object.keys(byStage);
+          window.stageChart.data.datasets[0].data = Object.values(byStage);
+          window.stageChart.update();
+        }
+      }, [JSON.stringify(byStage)]);
+
+      // Chart (for Lead Source)
+      React.useEffect(() => {
+        if (!window.sourceChart) {
+          window.sourceChart = new Chart(document.getElementById('sourceChart'), {
+            type: 'bar',
+            data: { labels: Object.keys(bySource), datasets: [{
+              label: 'Leads by Lead Source',
+              data: Object.values(bySource)
+            }]},
+            options: {responsive: true, plugins: {legend: {display: false}}}
+          });
+        } else {
+          window.sourceChart.data.labels = Object.keys(bySource);
+          window.sourceChart.data.datasets[0].data = Object.values(bySource);
+          window.sourceChart.update();
+        }
+      }, [JSON.stringify(bySource)]);
+
+      return (
+        <div className="container">
+          <h2>Keap Conversion Dashboard</h2>
+          <div className="file-upload">
+            <label>
+              <b>Upload CSV: </b>
+              <input type="file" accept=".csv" onChange={handleFileChange} />
+            </label>
+          </div>
+          {rawData.length > 0 && (
+            <>
+            <div className="filt-row flex">
+              <label>Date Range:</label>
+              <input type="date" value={startDate} min={dateRange[0].format('YYYY-MM-DD')} max={endDate} onChange={e=>setStartDate(e.target.value)} />
+              <span>to</span>
+              <input type="date" value={endDate} min={startDate} max={dateRange[1].format('YYYY-MM-DD')} onChange={e=>setEndDate(e.target.value)} />
+              <label>Owner:</label>
+              <select value={selectedOwner} onChange={e=>setSelectedOwner(e.target.value)}>
+                <option value="">All</option>
+                {ownerNames.map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
+              <label>Lead Source:</label>
+              <select value={selectedSource} onChange={e=>setSelectedSource(e.target.value)}>
+                <option value="">All</option>
+                {leadSources.map(src => <option key={src} value={src}>{src}</option>)}
+              </select>
+            </div>
+            <div className="stats">
+              <span><b>Total Leads:</b> {totalLeads} &nbsp;|&nbsp;</span>
+              <span><b>Clients:</b> {totalClients} &nbsp;|&nbsp;</span>
+              <span><b>Conversion Rate:</b> {convRate}%</span>
+            </div>
+            <div className="chart-wrap flex">
+              <div className="chart-box">
+                <canvas id="stageChart" height="180"></canvas>
+              </div>
+              <div className="chart-box">
+                <canvas id="sourceChart" height="180"></canvas>
+              </div>
+            </div>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Date Created</th>
+                  <th>Owner</th>
+                  <th>Lead Source</th>
+                  <th>Pipeline Stage</th>
+                  <th>Is Client</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.slice(0,30).map((r,i) => (
+                  <tr key={i}>
+                    <td>{r['Date Created'] && r['Date Created'].isValid && r['Date Created'].format('YYYY-MM-DD')}</td>
+                    <td>{r['Owner Name']}</td>
+                    <td>{r['Lead Source']}</td>
+                    <td>{r['Pipeline Stage']}</td>
+                    <td>{r['Is Client'] ? 'Yes' : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
